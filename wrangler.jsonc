@@ -8,6 +8,8 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "GITHUB_REPO": "edwardjones7/statmanposterbot",
+    // New posts from this X account are offered in Telegram (/watch on|off).
+    "WATCH_HANDLE": "EdTheStatMan",
     "WORKER_URL": "https://statmanposterbot.tweet-to-instagram-pipeline.workers.dev",
     // Caption model (Workers AI free tier: 10k neurons/day, roughly 100 captions).
     "CAPTION_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"

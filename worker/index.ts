@@ -9,7 +9,8 @@
 // Workers plan allows 10ms. Everything here is network-bound, which doesn't count.
 
 import { Telegram } from "../src/telegram.ts";
-import { parseTweetId } from "../src/tweet/fetch.ts";
+import { fetchTweet, parseTweetId } from "../src/tweet/fetch.ts";
+import { fetchTimeline, fillMissingParents, groupNewTweets, type Candidate, type TimelineTweet } from "../src/tweet/timeline.ts";
 import { ACTIONS, fallbackButtons, previewButtons, previewText, type Job, type JobMode, type JobReady } from "../src/job.ts";
 import { Instagram, refreshToken, whoAmI } from "../src/instagram.ts";
 import { writeCaption, type RunModel } from "../src/caption.ts";
@@ -38,6 +39,8 @@ export interface Env {
   JOB_CALLBACK_SECRET: string;
   /** This Worker's public URL. Instagram fetches slide images from it. */
   WORKER_URL: string;
+  /** X account whose new posts are offered for building (empty = watching disabled). */
+  WATCH_HANDLE?: string;
   /** Long-lived Instagram token from the Meta app dashboard. Seeds the token stored in D1. */
   IG_ACCESS_TOKEN?: string;
   /** Local development only: send render jobs to scripts/dev-bridge.ts instead of GitHub. */
@@ -95,10 +98,12 @@ export default {
     }
   },
 
-  // Every 5 minutes (wrangler.jsonc): keep the Instagram token fresh, and flag render jobs
+  // Every 5 minutes (wrangler.jsonc): keep the Instagram token fresh, offer new posts from
+  // WATCH_HANDLE, and flag render jobs
   // that never reported back (e.g. the GitHub job crashed before it could message Telegram).
   async scheduled(_event, env) {
     await maintainInstagramToken(env).catch((err) => console.error("token maintenance failed", err));
+    await pollTimeline(env).catch((err) => console.error("timeline poll failed", err));
     await env.DB.prepare("DELETE FROM processed_updates WHERE processed_at < ?").bind(Date.now() - 7 * DAY_MS).run();
 
     const tg = new Telegram(env.TELEGRAM_BOT_TOKEN);
@@ -137,6 +142,7 @@ const HELP = [
   "• Threads: send the LAST tweet's link and you'll get a carousel.",
   "• /single <link> posts just that one tweet, even if it's part of a thread.",
   "• /instagram shows whether Instagram is connected.",
+  "• /watch on | off: new posts from the watched account are offered here automatically.",
 ].join("\n");
 
 function isAllowed(user: TgUser | undefined, env: Env): boolean {
@@ -161,6 +167,11 @@ async function handleUpdate(update: TgUpdate, env: Env): Promise<void> {
   const link = text.match(/https?:\/\/(?:www\.|mobile\.)?(?:twitter|x)\.com\/\w+\/status(?:es)?\/\d+/i)?.[0];
   if (link) {
     await startJob(link, text.startsWith("/single") ? "single" : "auto", chatId, env, tg);
+    return;
+  }
+
+  if (text.startsWith("/watch")) {
+    await tg.sendMessage(chatId, await watchCommand(text.slice("/watch".length).trim(), env));
     return;
   }
 
@@ -218,6 +229,7 @@ function dispatchRender(job: Job, env: Env): Promise<Response> {
 
 async function handleButton(cb: NonNullable<TgUpdate["callback_query"]>, env: Env, tg: Telegram): Promise<void> {
   const [action, jobId] = (cb.data ?? "").split(":");
+  if (action in WATCH_ACTIONS_BY_CODE) return handleWatchButton(cb, env, tg);
   const job = jobId ? await loadJob(jobId, env) : null;
   const chatId = cb.message?.chat.id ?? cb.from.id;
 
@@ -299,6 +311,108 @@ async function jobReport(jobId: string, action: "ready" | "failed", body: unknow
     await saveJob({ ...job, status: "failed", error: (body as { error?: string }).error }, env);
   }
   return new Response("ok");
+}
+
+// ---------- Watching for new posts ----------
+
+const WATCH_SETTLE_MS = 3 * 60 * 1000; // give a thread time to be fully posted
+const WATCH_ALERT_AFTER_FAILURES = 6; // ~30 minutes of failed polls
+const WATCH_ACTIONS = { build: "wb", firstOnly: "w1", skip: "wx" } as const;
+const WATCH_ACTIONS_BY_CODE: Record<string, true> = Object.fromEntries(
+  Object.values(WATCH_ACTIONS).map((code) => [code, true]),
+);
+
+async function pollTimeline(env: Env): Promise<void> {
+  const handle = env.WATCH_HANDLE;
+  if (!handle || (await getSetting("watch_enabled", env)) === "off") return;
+  const tg = new Telegram(env.TELEGRAM_BOT_TOKEN);
+  const admin = env.TELEGRAM_ALLOWED_USER_IDS.split(",")[0].trim();
+
+  let timeline: TimelineTweet[];
+  try {
+    timeline = await fetchTimeline(handle);
+    await setSetting("watch_failures", "0", env);
+  } catch (err) {
+    // FxTwitter is unofficial: say so once if it stays down, rather than every 5 minutes.
+    const failures = Number((await getSetting("watch_failures", env)) ?? 0) + 1;
+    await setSetting("watch_failures", String(failures), env);
+    if (failures === WATCH_ALERT_AFTER_FAILURES) {
+      await tg.sendMessage(
+        admin,
+        `⚠️ Can't check @${handle} for new posts (${(err as Error).message}). ` +
+          "Pasting links still works; I'll keep retrying.",
+      );
+    }
+    return;
+  }
+
+  const since = await getSetting("watch_since_id", env);
+  if (!since) {
+    // First run: start from now instead of offering the whole history.
+    const newest = timeline.map((t) => t.id).sort((a, b) => (BigInt(a) < BigInt(b) ? 1 : -1))[0];
+    if (newest) await setSetting("watch_since_id", newest, env);
+    return;
+  }
+
+  const complete = await fillMissingParents(timeline, handle, since, async (id) => {
+    const t = await fetchTweet(id);
+    return { id: t.id, text: t.text, createdAt: t.createdAt, parentId: t.parentId, parentHandle: t.parentAuthorHandle, isRepost: false };
+  });
+  const { candidates, advanceTo } = groupNewTweets(complete, handle, since, WATCH_SETTLE_MS);
+  for (const candidate of candidates) await offerCandidate(candidate, handle, admin, tg);
+  if (advanceTo !== since) await setSetting("watch_since_id", advanceTo, env);
+}
+
+async function offerCandidate(c: Candidate, handle: string, chatId: string, tg: Telegram): Promise<void> {
+  const preview = c.text.length > 700 ? `${c.text.slice(0, 700).trimEnd()}…` : c.text;
+  const kind = c.size > 1 ? ` (thread of ${c.size})` : "";
+  const buttons =
+    c.size > 1
+      ? [
+          [
+            { text: "🎨 Build thread", callback_data: `${WATCH_ACTIONS.build}:${c.lastId}` },
+            { text: "1️⃣ First tweet only", callback_data: `${WATCH_ACTIONS.firstOnly}:${c.rootId}` },
+          ],
+          [{ text: "⏭ Skip", callback_data: `${WATCH_ACTIONS.skip}:${c.rootId}` }],
+        ]
+      : [
+          [
+            { text: "🎨 Build it", callback_data: `${WATCH_ACTIONS.build}:${c.lastId}` },
+            { text: "⏭ Skip", callback_data: `${WATCH_ACTIONS.skip}:${c.rootId}` },
+          ],
+        ];
+  await tg.sendMessage(
+    chatId,
+    `🆕 New post from @${handle}${kind}\n\n${preview}\n\nhttps://x.com/${handle}/status/${c.rootId}`,
+    buttons,
+  );
+}
+
+async function handleWatchButton(cb: NonNullable<TgUpdate["callback_query"]>, env: Env, tg: Telegram): Promise<void> {
+  const [action, tweetId] = (cb.data ?? "").split(":");
+  const chatId = cb.message?.chat.id ?? cb.from.id;
+  // Clear the buttons first so a double tap can't start two builds.
+  if (cb.message) await tg.clearButtons(chatId, cb.message.message_id).catch(() => {});
+
+  if (action === WATCH_ACTIONS.skip) {
+    await tg.answerCallback(cb.id, "Skipped");
+    return;
+  }
+  await tg.answerCallback(cb.id, "Building…");
+  const mode: JobMode = action === WATCH_ACTIONS.firstOnly ? "single" : "auto";
+  await startJob(`https://x.com/${env.WATCH_HANDLE}/status/${tweetId}`, mode, chatId, env, tg);
+}
+
+async function watchCommand(arg: string, env: Env): Promise<string> {
+  if (!env.WATCH_HANDLE) return "Watching isn't configured (no WATCH_HANDLE).";
+  if (arg === "on" || arg === "off") {
+    await setSetting("watch_enabled", arg, env);
+    return arg === "on"
+      ? `👀 Watching @${env.WATCH_HANDLE}: new posts will show up here with a Build button.`
+      : `⏸ Stopped watching @${env.WATCH_HANDLE}. Pasting links still works.`;
+  }
+  const on = (await getSetting("watch_enabled", env)) !== "off";
+  return `${on ? "👀 Watching" : "⏸ Not watching"} @${env.WATCH_HANDLE}. Use /watch on or /watch off.`;
 }
 
 // ---------- Instagram ----------
