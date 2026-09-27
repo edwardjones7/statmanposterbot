@@ -10,10 +10,10 @@ Paste a tweet link into Telegram → get a branded 1080×1350 image + AI caption
 |---|---|---|
 | 1 | Card renderer (Satori + resvg WASM) | ✅ |
 | 2 | Tweet fetching + thread → carousel | ✅ |
-| 3 | Telegram bot + approval flow | ✅ (tested locally) |
-| 4 | AI captions (Cloudflare Workers AI) | ✅ (needs deploy to test live) |
-| 5 | Instagram Graph API publishing | ⬜ |
-| 6 | Token refresh cron, alerts, duplicate protection | ⬜ |
+| 3 | Telegram bot + approval flow | ✅ |
+| 4 | AI captions (Cloudflare Workers AI) | ✅ |
+| 5 | Instagram publishing (Instagram Login API) + manual fallback | ✅ first post 2026-09-27 |
+| 6 | Token refresh cron, alerts, duplicate protection | 🟡 token refresh, render watchdog, no double-posting done |
 
 ## Architecture ($0)
 
@@ -22,8 +22,9 @@ Telegram ──link──► Cloudflare Worker (free) ──workflow_dispatch─
                    · Telegram webhook                               · fetch tweet
                    · approval buttons                               · render PNG(s) (~1.5s CPU each)
                    · AI caption (Workers AI)                        · send slides to Telegram
-                   · KV: job state + slide images                   · upload slides to Worker
-                   · Instagram publish (step 5)
+                   · KV: slide images                               · upload slides to Worker
+                   · Instagram publish + manual fallback
+                   · D1: job state, IG token; cron: token refresh + watchdog
 ```
 
 Rendering can't run on the Worker: the free plan allows 10ms CPU per request, and a
