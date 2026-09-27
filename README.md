@@ -2,7 +2,9 @@
 
 Tweet → Instagram pipeline for EdTheStatMan.
 
-Paste a tweet link into Telegram → get a branded 1080×1350 image + AI caption → approve → it posts to Instagram.
+Paste a tweet link into Telegram, or tap Build on a new post the bot spotted → get a branded 1080×1350 image + AI caption → approve → it posts to Instagram.
+
+Bot commands: `/watch on|off` (offer new @EdTheStatMan posts automatically), `/single <link>`, `/instagram`.
 
 ## Status
 
@@ -14,6 +16,7 @@ Paste a tweet link into Telegram → get a branded 1080×1350 image + AI caption
 | 4 | AI captions (Cloudflare Workers AI) | ✅ |
 | 5 | Instagram publishing (Instagram Login API) + manual fallback | ✅ first post 2026-09-27 |
 | 6 | Token refresh cron, alerts, duplicate protection | 🟡 token refresh, render watchdog, no double-posting done |
+| 7 | Watch for new posts (FxTwitter timeline, every 5 min) | ✅ |
 
 ## Architecture ($0)
 
