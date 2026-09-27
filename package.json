@@ -4,7 +4,10 @@
   "description": "Tweet URL -> branded Instagram image -> Telegram approval -> Instagram post",
   "scripts": {
     "preview": "tsx scripts/preview.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy",
+    "dev:bridge": "tsx --env-file=.dev.vars scripts/dev-bridge.ts"
   },
   "type": "module",
   "dependencies": {
@@ -12,12 +15,15 @@
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/outfit": "^5.3.0",
     "@resvg/resvg-wasm": "^2.6.2",
-    "satori": "^0.33.5"
+    "satori": "^0.33.5",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260927.1",
     "@types/node": "^26.6.3",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "wrangler": "^4.142.0"
   },
   "private": true
 }

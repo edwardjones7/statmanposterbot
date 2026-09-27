@@ -1,0 +1,46 @@
+name: render
+
+# Dispatched by the Cloudflare Worker for each tweet link sent to the bot.
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Job id (from the Worker)
+        required: true
+      tweet_url:
+        description: Tweet URL (a thread's last tweet for a carousel)
+        required: true
+      mode:
+        description: "auto = rebuild thread if there is one, single = just this tweet"
+        default: auto
+      chat_id:
+        description: Telegram chat to send the preview to
+        required: true
+
+run-name: render ${{ inputs.job_id }}
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Inputs go through env, never interpolated into the script, so a crafted
+      # input can't inject shell commands.
+      - run: npx tsx scripts/render-job.ts
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          TWEET_URL: ${{ inputs.tweet_url }}
+          MODE: ${{ inputs.mode }}
+          CHAT_ID: ${{ inputs.chat_id }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          JOB_CALLBACK_SECRET: ${{ secrets.JOB_CALLBACK_SECRET }}
+          WORKER_URL: ${{ vars.WORKER_URL }}

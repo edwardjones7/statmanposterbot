@@ -32,4 +32,10 @@ export interface Brand {
   showDate: boolean;
   /** IANA time zone the tweet timestamp is shown in. */
   timeZone: string;
+  caption: {
+    /** Line appended after the tweet text. */
+    signoff: string;
+    /** Always included; sport hashtags (#NFL, #CBB…) are added when the text mentions them. */
+    hashtags: string[];
+  };
 }

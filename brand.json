@@ -18,5 +18,9 @@
   "emoji": "apple",
   "monoNumbers": true,
   "showDate": true,
-  "timeZone": "America/New_York"
+  "timeZone": "America/New_York",
+  "caption": {
+    "signoff": "📊 Daily systems, trends & picks. Full access at the link in bio.",
+    "hashtags": ["#sportsbetting", "#handicapping", "#EdTheStatMan"]
+  }
 }

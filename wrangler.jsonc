@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "statmanposterbot",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  "vars": {
+    "GITHUB_REPO": "edwardjones7/statmanposterbot"
+  },
+  "kv_namespaces": [
+    // Created with `wrangler kv namespace create JOBS`; paste the printed id here.
+    { "binding": "JOBS", "id": "REPLACE_WITH_KV_ID" }
+  ],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "statmanposterbot-media" }]
+  // Secrets (set with `wrangler secret put <NAME>`, never committed):
+  //   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_ALLOWED_USER_IDS,
+  //   GITHUB_TOKEN, JOB_CALLBACK_SECRET
+}
