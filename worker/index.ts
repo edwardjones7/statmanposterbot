@@ -10,7 +10,8 @@
 
 import { Telegram } from "../src/telegram.ts";
 import { parseTweetId } from "../src/tweet/fetch.ts";
-import { ACTIONS, previewButtons, previewText, type Job, type JobMode, type JobReady } from "../src/job.ts";
+import { ACTIONS, fallbackButtons, previewButtons, previewText, type Job, type JobMode, type JobReady } from "../src/job.ts";
+import { Instagram, refreshToken, whoAmI } from "../src/instagram.ts";
 import { writeCaption, type RunModel } from "../src/caption.ts";
 import type { Brand } from "../src/render/brand.ts";
 import brandJson from "../brand.json";
@@ -35,6 +36,10 @@ export interface Env {
   GITHUB_REPO: string; // "owner/name"
   /** Shared with the render job so only it can upload media and report results. */
   JOB_CALLBACK_SECRET: string;
+  /** This Worker's public URL. Instagram fetches slide images from it. */
+  WORKER_URL: string;
+  /** Long-lived Instagram token from the Meta app dashboard. Seeds the token stored in D1. */
+  IG_ACCESS_TOKEN?: string;
   /** Local development only: send render jobs to scripts/dev-bridge.ts instead of GitHub. */
   DEV_DISPATCH_URL?: string;
 }
@@ -43,7 +48,7 @@ const MEDIA_TTL = 60 * 60 * 24 * 30; // slide images are kept 30 days
 const EDIT_TTL_MS = 60 * 60 * 1000; // a pending caption edit expires after an hour
 
 export default {
-  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
 
@@ -53,8 +58,10 @@ export default {
           return new Response("forbidden", { status: 403 });
         }
         const update = (await req.json()) as TgUpdate;
-        // Ack immediately; Telegram retries (and duplicates work) if we're slow.
-        ctx.waitUntil(handleUpdate(update, env).catch((err) => console.error("update failed", err)));
+        // Handled before answering (publishing can outlast waitUntil's time limit). If that
+        // makes Telegram time out and re-send the update, the dedupe makes the retry a no-op.
+        if (await alreadyProcessed(update.update_id, env)) return new Response("ok");
+        await handleUpdate(update, env).catch((err) => console.error("update failed", err));
         return new Response("ok");
       }
 
@@ -88,9 +95,12 @@ export default {
     }
   },
 
-  // Every 5 minutes (wrangler.jsonc): flag render jobs that never reported back, e.g. the
-  // GitHub job crashed before it could message Telegram itself.
+  // Every 5 minutes (wrangler.jsonc): keep the Instagram token fresh, and flag render jobs
+  // that never reported back (e.g. the GitHub job crashed before it could message Telegram).
   async scheduled(_event, env) {
+    await maintainInstagramToken(env).catch((err) => console.error("token maintenance failed", err));
+    await env.DB.prepare("DELETE FROM processed_updates WHERE processed_at < ?").bind(Date.now() - 7 * DAY_MS).run();
+
     const tg = new Telegram(env.TELEGRAM_BOT_TOKEN);
     const cutoff = new Date(Date.now() - RENDER_TIMEOUT_MS).toISOString();
     const { results } = await env.DB.prepare("SELECT data FROM jobs WHERE status = 'rendering' AND created_at < ?")
@@ -116,6 +126,7 @@ interface TgUser {
   id: number;
 }
 interface TgUpdate {
+  update_id: number;
   message?: { message_id: number; from?: TgUser; chat: { id: number }; text?: string };
   callback_query?: { id: string; from: TgUser; data?: string; message?: { message_id: number; chat: { id: number } } };
 }
@@ -125,6 +136,7 @@ const HELP = [
   "",
   "• Threads: send the LAST tweet's link and you'll get a carousel.",
   "• /single <link> posts just that one tweet, even if it's part of a thread.",
+  "• /instagram shows whether Instagram is connected.",
 ].join("\n");
 
 function isAllowed(user: TgUser | undefined, env: Env): boolean {
@@ -149,6 +161,11 @@ async function handleUpdate(update: TgUpdate, env: Env): Promise<void> {
   const link = text.match(/https?:\/\/(?:www\.|mobile\.)?(?:twitter|x)\.com\/\w+\/status(?:es)?\/\d+/i)?.[0];
   if (link) {
     await startJob(link, text.startsWith("/single") ? "single" : "auto", chatId, env, tg);
+    return;
+  }
+
+  if (text === "/instagram") {
+    await tg.sendMessage(chatId, await instagramStatus(env));
     return;
   }
 
@@ -215,11 +232,21 @@ async function handleButton(cb: NonNullable<TgUpdate["callback_query"]>, env: En
 
   switch (action) {
     case ACTIONS.approve: {
-      await saveJob({ ...job, status: "approved" }, env);
-      await tg.answerCallback(cb.id, "Approved");
-      if (job.previewMessageId) await tg.clearButtons(chatId, job.previewMessageId);
-      // Step 5 replaces this with the Instagram publish.
-      await tg.sendMessage(chatId, "✅ Approved. Instagram publishing isn't connected yet (step 5).");
+      // Claim the job atomically, so a double tap or a Telegram retry can't post twice.
+      if (!(await claimForPosting(job.id, env))) {
+        await tg.answerCallback(cb.id, "Already being posted.");
+        return;
+      }
+      await tg.answerCallback(cb.id, "Posting to Instagram…");
+      if (cb.message) await tg.clearButtons(chatId, cb.message.message_id).catch(() => {});
+      await publishJob({ ...job, status: "posting" }, env, tg);
+      return;
+    }
+    case ACTIONS.postedManually: {
+      await saveJob({ ...job, status: "posted", instagramUrl: "manual" }, env);
+      await tg.answerCallback(cb.id, "Marked as posted");
+      if (cb.message) await tg.clearButtons(chatId, cb.message.message_id).catch(() => {});
+      await tg.sendMessage(chatId, "✔️ Marked as posted manually.");
       return;
     }
     case ACTIONS.edit: {
@@ -237,7 +264,7 @@ async function handleButton(cb: NonNullable<TgUpdate["callback_query"]>, env: En
     case ACTIONS.reject: {
       await saveJob({ ...job, status: "rejected" }, env);
       await tg.answerCallback(cb.id, "Rejected");
-      if (job.previewMessageId) await tg.clearButtons(chatId, job.previewMessageId);
+      if (cb.message) await tg.clearButtons(chatId, cb.message.message_id).catch(() => {});
       await tg.sendMessage(chatId, "🗑️ Rejected — nothing was posted.");
       return;
     }
@@ -272,6 +299,104 @@ async function jobReport(jobId: string, action: "ready" | "failed", body: unknow
     await saveJob({ ...job, status: "failed", error: (body as { error?: string }).error }, env);
   }
   return new Response("ok");
+}
+
+// ---------- Instagram ----------
+
+async function publishJob(job: Job, env: Env, tg: Telegram): Promise<void> {
+  const imageUrls = Array.from({ length: job.slideCount ?? 1 }, (_, i) => `${env.WORKER_URL}/media/${job.id}/${i + 1}.jpg`);
+  try {
+    const ig = await instagramClient(env);
+    const { permalink } = await ig.publish(imageUrls, job.caption ?? "");
+    await saveJob({ ...job, status: "posted", instagramUrl: permalink ?? "posted", error: undefined }, env);
+    await tg.sendMessage(job.chatId, `🎉 Posted to Instagram!${permalink ? `\n${permalink}` : ""}`);
+  } catch (err) {
+    // Fallback: hand over everything needed to post by hand, and allow a retry.
+    const reason = (err as Error).message;
+    await saveJob({ ...job, status: "ready", error: reason }, env);
+    const images = await Promise.all(
+      imageUrls.map((_, i) => env.STORE.get(mediaKey(job.id, `${i + 1}.jpg`), "arrayBuffer")),
+    );
+    const files = images.filter((img): img is ArrayBuffer => img !== null).map((img) => new Uint8Array(img));
+    await tg.sendMessage(job.chatId, `⚠️ Instagram didn't take the post:\n${reason}\n\nHere it is to post by hand:`);
+    if (files.length) await tg.sendImages(job.chatId, files, "document");
+    await tg.sendMessage(job.chatId, job.caption ?? "");
+    await tg.sendMessage(job.chatId, "Save the files, paste the caption, and post. Then:", fallbackButtons(job.id));
+  }
+}
+
+/** Moves a job from ready to posting; false if something else already did. */
+async function claimForPosting(jobId: string, env: Env): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE jobs SET status = 'posting', data = json_set(data, '$.status', 'posting')
+     WHERE id = ? AND status = 'ready'`,
+  )
+    .bind(jobId)
+    .run();
+  return result.meta.changes === 1;
+}
+
+// The access token lives in D1 because it's replaced on every refresh. IG_ACCESS_TOKEN
+// (a Worker secret) seeds it; setting a new secret value replaces the stored token.
+async function currentInstagramToken(env: Env): Promise<string | null> {
+  if (env.IG_ACCESS_TOKEN && (await getSetting("ig_seed_token", env)) !== env.IG_ACCESS_TOKEN) {
+    await setSetting("ig_seed_token", env.IG_ACCESS_TOKEN, env);
+    await setSetting("ig_token", env.IG_ACCESS_TOKEN, env);
+    await setSetting("ig_token_refreshed_at", String(Date.now()), env);
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'ig_user_id'").run();
+  }
+  return getSetting("ig_token", env);
+}
+
+async function instagramClient(env: Env): Promise<Instagram> {
+  const token = await currentInstagramToken(env);
+  if (!token) throw new Error("Instagram isn't connected yet (no IG_ACCESS_TOKEN)");
+  let userId = await getSetting("ig_user_id", env);
+  if (!userId) {
+    userId = (await whoAmI(token)).userId;
+    await setSetting("ig_user_id", userId, env);
+  }
+  return new Instagram(token, userId);
+}
+
+const TOKEN_REFRESH_EVERY_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Called from the cron. Tokens expire 60 days after their last refresh; refreshing
+// weekly leaves weeks of slack. A failure retries daily and alerts each time.
+async function maintainInstagramToken(env: Env): Promise<void> {
+  const token = await currentInstagramToken(env);
+  if (!token) return;
+  const refreshedAt = Number((await getSetting("ig_token_refreshed_at", env)) ?? 0);
+  if (Date.now() - refreshedAt < TOKEN_REFRESH_EVERY_MS) return;
+
+  try {
+    const fresh = await refreshToken(token);
+    await setSetting("ig_token", fresh.token, env);
+    await setSetting("ig_token_refreshed_at", String(Date.now()), env);
+  } catch (err) {
+    await setSetting("ig_token_refreshed_at", String(Date.now() - TOKEN_REFRESH_EVERY_MS + DAY_MS), env);
+    const admin = env.TELEGRAM_ALLOWED_USER_IDS.split(",")[0].trim();
+    await new Telegram(env.TELEGRAM_BOT_TOKEN).sendMessage(
+      admin,
+      `⚠️ Couldn't refresh the Instagram access token: ${(err as Error).message}\n\n` +
+        "Posting keeps working until the token expires (60 days after its last refresh). " +
+        "If this keeps happening, generate a new token in the Meta app dashboard.",
+    );
+  }
+}
+
+async function instagramStatus(env: Env): Promise<string> {
+  const token = await currentInstagramToken(env);
+  if (!token) return "📷 Instagram: not connected (no IG_ACCESS_TOKEN set).";
+  try {
+    const { username } = await whoAmI(token);
+    const refreshedAt = Number((await getSetting("ig_token_refreshed_at", env)) ?? 0);
+    const daysLeft = Math.floor((refreshedAt + 60 * DAY_MS - Date.now()) / DAY_MS);
+    return `📷 Instagram: connected as @${username}. Token valid ~${daysLeft} more days (auto-refreshes weekly).`;
+  } catch (err) {
+    return `📷 Instagram: token rejected: ${(err as Error).message}`;
+  }
 }
 
 // ---------- Captions ----------
@@ -338,4 +463,22 @@ async function setPendingEdit(userId: number, jobId: string, env: Env): Promise<
 
 async function clearPendingEdit(userId: number, env: Env): Promise<void> {
   await env.DB.prepare("DELETE FROM caption_edits WHERE user_id = ?").bind(userId).run();
+}
+
+async function getSetting(key: string, env: Env): Promise<string | null> {
+  return env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first<string>("value");
+}
+
+async function setSetting(key: string, value: string, env: Env): Promise<void> {
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+    .bind(key, value, Date.now())
+    .run();
+}
+
+/** Records the update; true if it was already recorded (a Telegram re-send). */
+async function alreadyProcessed(updateId: number, env: Env): Promise<boolean> {
+  const result = await env.DB.prepare("INSERT OR IGNORE INTO processed_updates (update_id, processed_at) VALUES (?, ?)")
+    .bind(updateId, Date.now())
+    .run();
+  return result.meta.changes === 0;
 }

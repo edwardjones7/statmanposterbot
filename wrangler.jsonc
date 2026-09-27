@@ -8,6 +8,7 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "GITHUB_REPO": "edwardjones7/statmanposterbot",
+    "WORKER_URL": "https://statmanposterbot.tweet-to-instagram-pipeline.workers.dev",
     // Caption model (Workers AI free tier: 10k neurons/day, roughly 100 captions).
     "CAPTION_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   },
@@ -23,5 +24,5 @@
   "ai": { "binding": "AI" },
   // Secrets (set with `wrangler secret put <NAME>`, never committed):
   //   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_ALLOWED_USER_IDS,
-  //   GITHUB_TOKEN, JOB_CALLBACK_SECRET
+  //   GITHUB_TOKEN, JOB_CALLBACK_SECRET, IG_ACCESS_TOKEN
 }

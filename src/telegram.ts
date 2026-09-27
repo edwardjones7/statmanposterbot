@@ -34,19 +34,23 @@ export class Telegram {
     });
   }
 
-  /** Uploads images directly (no public URL needed). One image = photo, 2–10 = album. */
-  async sendImages(chatId: number | string, images: Uint8Array[]): Promise<void> {
+  /**
+   * Uploads JPEGs directly (no public URL needed). One image = single message, 2–10 = album.
+   * "photo" is compressed by Telegram (fine for previews); "document" keeps the exact file,
+   * for saving and posting by hand.
+   */
+  async sendImages(chatId: number | string, images: Uint8Array[], as: "photo" | "document" = "photo"): Promise<void> {
     const form = new FormData();
     form.set("chat_id", String(chatId));
     // slice() narrows the buffer type to a plain ArrayBuffer, which Blob accepts in every runtime's typings.
     const blob = (bytes: Uint8Array) => new Blob([bytes.slice()], { type: "image/jpeg" });
 
     if (images.length === 1) {
-      form.set("photo", blob(images[0]), "slide-1.jpg");
-      await this.call("sendPhoto", form);
+      form.set(as, blob(images[0]), "slide-1.jpg");
+      await this.call(as === "photo" ? "sendPhoto" : "sendDocument", form);
       return;
     }
-    const media = images.map((_, i) => ({ type: "photo", media: `attach://slide${i + 1}` }));
+    const media = images.map((_, i) => ({ type: as, media: `attach://slide${i + 1}` }));
     form.set("media", JSON.stringify(media));
     images.forEach((img, i) => form.set(`slide${i + 1}`, blob(img), `slide-${i + 1}.jpg`));
     await this.call("sendMediaGroup", form);
