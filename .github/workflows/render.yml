@@ -43,4 +43,5 @@ jobs:
           CHAT_ID: ${{ inputs.chat_id }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           JOB_CALLBACK_SECRET: ${{ secrets.JOB_CALLBACK_SECRET }}
-          WORKER_URL: ${{ vars.WORKER_URL }}
+          # Not a secret. A WORKER_URL repository variable overrides it.
+          WORKER_URL: ${{ vars.WORKER_URL || 'https://statmanposterbot.tweet-to-instagram-pipeline.workers.dev' }}
