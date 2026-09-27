@@ -11,10 +11,18 @@
 import { Telegram } from "../src/telegram.ts";
 import { parseTweetId } from "../src/tweet/fetch.ts";
 import { ACTIONS, previewButtons, previewText, type Job, type JobMode, type JobReady } from "../src/job.ts";
+import { writeCaption, type RunModel } from "../src/caption.ts";
+import type { Brand } from "../src/render/brand.ts";
+import brandJson from "../brand.json";
+
+const brand = brandJson as Brand;
 
 export interface Env {
   JOBS: KVNamespace;
   MEDIA: R2Bucket;
+  AI: Ai;
+  /** Workers AI text model used for captions. */
+  CAPTION_MODEL: string;
   TELEGRAM_BOT_TOKEN: string;
   /** Sent by Telegram in X-Telegram-Bot-Api-Secret-Token; proves the webhook call is real. */
   TELEGRAM_WEBHOOK_SECRET: string;
@@ -194,7 +202,13 @@ async function handleButton(cb: NonNullable<TgUpdate["callback_query"]>, env: En
     case ACTIONS.edit: {
       await env.JOBS.put(editKey(cb.from.id), job.id, { expirationTtl: EDIT_TTL });
       await tg.answerCallback(cb.id);
-      await tg.sendMessage(chatId, "✏️ Send the new caption as your next message.");
+      await tg.sendMessage(chatId, "✏️ Send the new caption as your next message. Current caption to copy and edit:");
+      await tg.sendMessage(chatId, job.caption ?? "");
+      return;
+    }
+    case ACTIONS.regenerate: {
+      await tg.answerCallback(cb.id, "Writing a new caption…");
+      await sendPreview(job, env, tg, { fresh: true });
       return;
     }
     case ACTIONS.reject: {
@@ -229,11 +243,44 @@ async function jobReport(jobId: string, action: "ready" | "failed", body: unknow
 
   if (action === "ready") {
     const r = body as JobReady;
-    await saveJob({ ...job, status: "ready", caption: r.caption, slideCount: r.slideCount, previewMessageId: r.previewMessageId }, env);
+    const readyJob: Job = { ...job, status: "ready", sourceText: r.sourceText, slideCount: r.slideCount };
+    await sendPreview(readyJob, env, new Telegram(env.TELEGRAM_BOT_TOKEN), { note: r.note });
   } else {
     await saveJob({ ...job, status: "failed", error: (body as { error?: string }).error }, env);
   }
   return new Response("ok");
+}
+
+// ---------- Captions ----------
+
+/** Writes a caption for the job and sends it as a fresh preview with buttons. */
+async function sendPreview(job: Job, env: Env, tg: Telegram, opts: { fresh?: boolean; note?: string } = {}): Promise<void> {
+  const caption = await writeCaption(job.sourceText ?? "", brand, workersAi(env), { fresh: opts.fresh });
+  const notes = [opts.note, caption.fallbackReason && `ℹ️ Template caption used: ${caption.fallbackReason}`]
+    .filter(Boolean)
+    .join("\n");
+
+  if (job.previewMessageId) await tg.clearButtons(job.chatId, job.previewMessageId).catch(() => {});
+  const preview = await tg.sendMessage(
+    job.chatId,
+    previewText(caption.text, job.slideCount ?? 1, job.tweetUrl, notes || undefined),
+    previewButtons(job.id),
+  );
+  await saveJob({ ...job, caption: caption.text, previewMessageId: preview.message_id }, env);
+}
+
+function workersAi(env: Env): RunModel {
+  return async (messages, temperature) => {
+    const out = (await env.AI.run(env.CAPTION_MODEL as Parameters<Ai["run"]>[0], {
+      messages,
+      temperature,
+      max_tokens: 800,
+    })) as { response?: unknown; choices?: { message?: { content?: string } }[] };
+    // Older Workers AI models return { response }, OpenAI-compatible ones return { choices }.
+    const text = typeof out.response === "string" ? out.response : out.choices?.[0]?.message?.content;
+    if (!text) throw new Error("empty model response");
+    return text;
+  };
 }
 
 // ---------- Storage ----------

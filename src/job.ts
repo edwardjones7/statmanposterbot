@@ -13,6 +13,8 @@ export interface Job {
   chatId: number;
   status: JobStatus;
   createdAt: string;
+  /** The tweet text (threads joined with blank lines), used to write and rewrite captions. */
+  sourceText?: string;
   caption?: string;
   slideCount?: number;
   /** The Telegram message holding the caption + buttons, so buttons can be cleared later. */
@@ -20,14 +22,15 @@ export interface Job {
   error?: string;
 }
 
-/** Sent by the render job to `POST /jobs/:id/ready`. */
+/** Sent by the render job to `POST /jobs/:id/ready` once the slides are uploaded. */
 export interface JobReady {
-  caption: string;
+  sourceText: string;
   slideCount: number;
-  previewMessageId: number;
+  /** Warning to show under the preview, e.g. a thread was cut to 10 slides. */
+  note?: string;
 }
 
-export const ACTIONS = { approve: "a", edit: "e", reject: "r" } as const;
+export const ACTIONS = { approve: "a", edit: "e", regenerate: "g", reject: "r" } as const;
 
 export function previewButtons(jobId: string): InlineButton[][] {
   return [
@@ -35,11 +38,14 @@ export function previewButtons(jobId: string): InlineButton[][] {
       { text: "✅ Post", callback_data: `${ACTIONS.approve}:${jobId}` },
       { text: "✏️ Edit caption", callback_data: `${ACTIONS.edit}:${jobId}` },
     ],
-    [{ text: "❌ Reject", callback_data: `${ACTIONS.reject}:${jobId}` }],
+    [
+      { text: "🔄 New caption", callback_data: `${ACTIONS.regenerate}:${jobId}` },
+      { text: "❌ Reject", callback_data: `${ACTIONS.reject}:${jobId}` },
+    ],
   ];
 }
 
-export function previewText(caption: string, slideCount: number, tweetUrl: string): string {
+export function previewText(caption: string, slideCount: number, tweetUrl: string, note?: string): string {
   const slides = slideCount === 1 ? "1 image" : `${slideCount}-slide carousel`;
-  return `📝 Caption\n\n${caption}\n\n———\n${slides} · ${tweetUrl}`;
+  return `📝 Caption\n\n${caption}\n\n———\n${slides} · ${tweetUrl}${note ? `\n${note}` : ""}`;
 }

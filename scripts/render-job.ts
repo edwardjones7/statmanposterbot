@@ -13,7 +13,7 @@ import { renderSlides } from "../src/render/render.ts";
 import { loadBrand, loadRenderDeps } from "../src/platform/node.ts";
 import { templateCaption } from "../src/caption.ts";
 import { Telegram } from "../src/telegram.ts";
-import { previewButtons, previewText, type JobReady } from "../src/job.ts";
+import { previewText, type JobReady } from "../src/job.ts";
 
 const env = (name: string, fallback?: string): string => {
   const value = process.env[name] ?? fallback;
@@ -48,7 +48,7 @@ try {
     const thread = await fetchThread(tweetUrl);
     tweets = thread.tweets;
     if (thread.droppedCount) {
-      note = `\n⚠️ Thread is ${tweets.length + thread.droppedCount} tweets; only the first 10 fit a carousel.`;
+      note = `⚠️ Thread is ${tweets.length + thread.droppedCount} tweets; only the first 10 fit a carousel.`;
     }
   }
 
@@ -57,21 +57,21 @@ try {
   // Instagram's publishing API only accepts JPEG.
   const jpegs = await Promise.all(pngs.map((png) => sharp(png).jpeg({ quality: 92, mozjpeg: true }).toBuffer()));
   const images = jpegs.map((buf) => new Uint8Array(buf));
-  const caption = templateCaption(tweets, brand);
+  const sourceText = tweets.map((t) => t.text).join("\n\n");
 
   for (const [i, img] of images.entries()) {
     await toWorker(`/jobs/${jobId}/media/${i + 1}.jpg`, img as BodyInit, "image/jpeg", "PUT");
   }
-
   await tg.sendImages(chatId, images);
-  const preview = await tg.sendMessage(
-    chatId,
-    previewText(caption, images.length, tweets.at(-1)!.url) + note,
-    workerUrl ? previewButtons(jobId) : undefined,
-  );
 
-  const ready: JobReady = { caption, slideCount: images.length, previewMessageId: preview.message_id };
-  await toWorker(`/jobs/${jobId}/ready`, JSON.stringify(ready), "application/json");
+  if (workerUrl) {
+    // The Worker writes the caption (Workers AI) and sends the preview with buttons.
+    const ready: JobReady = { sourceText, slideCount: images.length, note: note || undefined };
+    await toWorker(`/jobs/${jobId}/ready`, JSON.stringify(ready), "application/json");
+  } else {
+    // Standalone local run: template caption, no buttons.
+    await tg.sendMessage(chatId, previewText(templateCaption(sourceText, brand), images.length, tweetUrl, note));
+  }
   console.log(`Job ${jobId}: ${images.length} slide(s) ready`);
 } catch (err) {
   const message = (err as Error).message;
