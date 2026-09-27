@@ -11,7 +11,7 @@
   },
   "kv_namespaces": [
     // Job state + slide images. Created with `wrangler kv namespace create STORE`.
-    { "binding": "STORE", "id": "REPLACE_WITH_KV_ID" }
+    { "binding": "STORE", "id": "0aeda956f31e49fa9ed9e9be17c8d54a" }
   ],
   "ai": { "binding": "AI" },
   // Secrets (set with `wrangler secret put <NAME>`, never committed):
