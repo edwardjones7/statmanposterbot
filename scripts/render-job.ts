@@ -28,6 +28,10 @@ const chatId = env("CHAT_ID", process.env.TELEGRAM_ALLOWED_USER_IDS?.split(",")[
 const tg = new Telegram(env("TELEGRAM_BOT_TOKEN"));
 const workerUrl = process.env.WORKER_URL?.replace(/\/$/, "");
 const callbackSecret = process.env.JOB_CALLBACK_SECRET;
+// Running without a Worker is only for local testing; in CI it means misconfiguration.
+if (process.env.GITHUB_ACTIONS && (!workerUrl || !callbackSecret)) {
+  throw new Error("WORKER_URL and JOB_CALLBACK_SECRET must be set in GitHub Actions");
+}
 
 async function toWorker(path: string, body: BodyInit, contentType: string, method = "POST"): Promise<void> {
   if (!workerUrl) return;
