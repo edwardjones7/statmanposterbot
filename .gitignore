@@ -1,0 +1,8 @@
+node_modules/
+out/
+.dev.vars
+.env
+.wrangler/
+
+# Client business context: private, never publish
+.claude/context/

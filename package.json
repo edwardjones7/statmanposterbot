@@ -1,0 +1,23 @@
+{
+  "name": "tweet-to-instagram-pipeline",
+  "version": "1.0.0",
+  "description": "Tweet URL -> branded Instagram image -> Telegram approval -> Instagram post",
+  "scripts": {
+    "preview": "tsx scripts/preview.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/outfit": "^5.3.0",
+    "@resvg/resvg-wasm": "^2.6.2",
+    "satori": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}

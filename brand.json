@@ -1,0 +1,22 @@
+{
+  "clientName": "EdTheStatMan",
+  "colors": {
+    "canvas": "#071219",
+    "card": "#0C1E28",
+    "border": "rgba(45, 212, 191, 0.25)",
+    "divider": "rgba(148, 190, 200, 0.1)",
+    "heading": "#F4FAFC",
+    "text": "#DBE7EC",
+    "secondary": "#93A8B3",
+    "accent": "#2DD4BF"
+  },
+  "texture": "assets/candles.svg",
+  "footer": {
+    "text": "@edthestatman",
+    "logo": "assets/logo.png"
+  },
+  "emoji": "apple",
+  "monoNumbers": true,
+  "showDate": true,
+  "timeZone": "America/New_York"
+}
