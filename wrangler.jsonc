@@ -10,11 +10,10 @@
     "CAPTION_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   },
   "kv_namespaces": [
-    // Created with `wrangler kv namespace create JOBS`; paste the printed id here.
-    { "binding": "JOBS", "id": "REPLACE_WITH_KV_ID" }
+    // Job state + slide images. Created with `wrangler kv namespace create STORE`.
+    { "binding": "STORE", "id": "REPLACE_WITH_KV_ID" }
   ],
   "ai": { "binding": "AI" },
-  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "statmanposterbot-media" }]
   // Secrets (set with `wrangler secret put <NAME>`, never committed):
   //   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_ALLOWED_USER_IDS,
   //   GITHUB_TOKEN, JOB_CALLBACK_SECRET

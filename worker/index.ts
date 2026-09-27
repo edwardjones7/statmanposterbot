@@ -1,7 +1,7 @@
 // Cloudflare Worker: the always-on half of the pipeline (free plan).
 //
 //   POST /telegram                 Telegram webhook: tweet links in, button presses
-//   PUT  /jobs/:id/media/:file     render job uploads slide JPEGs → R2
+//   PUT  /jobs/:id/media/:file     render job uploads slide JPEGs → KV
 //   POST /jobs/:id/ready|failed    render job reports its result
 //   GET  /media/:id/:file          serves slides publicly (Instagram fetches them from here)
 //
@@ -18,8 +18,8 @@ import brandJson from "../brand.json";
 const brand = brandJson as Brand;
 
 export interface Env {
-  JOBS: KVNamespace;
-  MEDIA: R2Bucket;
+  /** Job records, pending caption edits and slide images (KV: free with no card, unlike R2). */
+  STORE: KVNamespace;
   AI: Ai;
   /** Workers AI text model used for captions. */
   CAPTION_MODEL: string;
@@ -62,7 +62,7 @@ export default {
         }
         const [, jobId, action, file] = parts;
         if (req.method === "PUT" && action === "media" && file && /^\d+\.jpg$/.test(file)) {
-          await env.MEDIA.put(`${jobId}/${file}`, req.body, { httpMetadata: { contentType: "image/jpeg" } });
+          await env.STORE.put(mediaKey(jobId, file), await req.arrayBuffer(), { expirationTtl: JOB_TTL });
           return new Response("stored");
         }
         if (req.method === "POST" && (action === "ready" || action === "failed")) {
@@ -71,9 +71,9 @@ export default {
       }
 
       if (req.method === "GET" && parts[0] === "media" && parts.length === 3) {
-        const obj = await env.MEDIA.get(`${parts[1]}/${parts[2]}`);
-        if (!obj) return new Response("not found", { status: 404 });
-        return new Response(obj.body, {
+        const image = await env.STORE.get(mediaKey(parts[1], parts[2]), "arrayBuffer");
+        if (!image) return new Response("not found", { status: 404 });
+        return new Response(image, {
           headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" },
         });
       }
@@ -129,7 +129,7 @@ async function handleUpdate(update: TgUpdate, env: Env): Promise<void> {
     return;
   }
 
-  const editingJobId = await env.JOBS.get(editKey(msg.from!.id));
+  const editingJobId = await env.STORE.get(editKey(msg.from!.id));
   if (editingJobId && !text.startsWith("/")) {
     await applyCaptionEdit(editingJobId, text, msg.from!.id, env, tg);
     return;
@@ -200,7 +200,7 @@ async function handleButton(cb: NonNullable<TgUpdate["callback_query"]>, env: En
       return;
     }
     case ACTIONS.edit: {
-      await env.JOBS.put(editKey(cb.from.id), job.id, { expirationTtl: EDIT_TTL });
+      await env.STORE.put(editKey(cb.from.id), job.id, { expirationTtl: EDIT_TTL });
       await tg.answerCallback(cb.id);
       await tg.sendMessage(chatId, "✏️ Send the new caption as your next message. Current caption to copy and edit:");
       await tg.sendMessage(chatId, job.caption ?? "");
@@ -222,7 +222,7 @@ async function handleButton(cb: NonNullable<TgUpdate["callback_query"]>, env: En
 }
 
 async function applyCaptionEdit(jobId: string, caption: string, userId: number, env: Env, tg: Telegram): Promise<void> {
-  await env.JOBS.delete(editKey(userId));
+  await env.STORE.delete(editKey(userId));
   const job = await loadJob(jobId, env);
   if (!job || job.status !== "ready") return;
 
@@ -287,11 +287,12 @@ function workersAi(env: Env): RunModel {
 
 const jobKey = (id: string) => `job:${id}`;
 const editKey = (userId: number) => `editing:${userId}`;
+const mediaKey = (jobId: string, file: string) => `media:${jobId}/${file}`;
 
 async function loadJob(id: string, env: Env): Promise<Job | null> {
-  return env.JOBS.get<Job>(jobKey(id), "json");
+  return env.STORE.get<Job>(jobKey(id), "json");
 }
 
 async function saveJob(job: Job, env: Env): Promise<void> {
-  await env.JOBS.put(jobKey(job.id), JSON.stringify(job), { expirationTtl: JOB_TTL });
+  await env.STORE.put(jobKey(job.id), JSON.stringify(job), { expirationTtl: JOB_TTL });
 }
