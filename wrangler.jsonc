@@ -11,8 +11,13 @@
     // Caption model (Workers AI free tier: 10k neurons/day, roughly 100 captions).
     "CAPTION_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   },
+  "d1_databases": [
+    // Job state (strongly consistent). Schema in migrations/, applied with
+    // `wrangler d1 migrations apply statmanposterbot --remote`.
+    { "binding": "DB", "database_name": "statmanposterbot", "database_id": "7637f4c7-899d-4ba3-9bac-66bbaae91d79" }
+  ],
   "kv_namespaces": [
-    // Job state + slide images. Created with `wrangler kv namespace create STORE`.
+    // Slide images. Created with `wrangler kv namespace create STORE`.
     { "binding": "STORE", "id": "0aeda956f31e49fa9ed9e9be17c8d54a" }
   ],
   "ai": { "binding": "AI" },

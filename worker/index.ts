@@ -18,7 +18,9 @@ import brandJson from "../brand.json";
 const brand = brandJson as Brand;
 
 export interface Env {
-  /** Job records, pending caption edits and slide images (KV: free with no card, unlike R2). */
+  /** Job state and pending caption edits (see migrations/). */
+  DB: D1Database;
+  /** Slide images (KV: free with no card, unlike R2). */
   STORE: KVNamespace;
   AI: Ai;
   /** Workers AI text model used for captions. */
@@ -37,8 +39,8 @@ export interface Env {
   DEV_DISPATCH_URL?: string;
 }
 
-const JOB_TTL = 60 * 60 * 24 * 30; // keep job records 30 days
-const EDIT_TTL = 60 * 60; // a pending caption edit expires after an hour
+const MEDIA_TTL = 60 * 60 * 24 * 30; // slide images are kept 30 days
+const EDIT_TTL_MS = 60 * 60 * 1000; // a pending caption edit expires after an hour
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -62,7 +64,7 @@ export default {
         }
         const [, jobId, action, file] = parts;
         if (req.method === "PUT" && action === "media" && file && /^\d+\.jpg$/.test(file)) {
-          await env.STORE.put(mediaKey(jobId, file), await req.arrayBuffer(), { expirationTtl: JOB_TTL });
+          await env.STORE.put(mediaKey(jobId, file), await req.arrayBuffer(), { expirationTtl: MEDIA_TTL });
           return new Response("stored");
         }
         if (req.method === "POST" && (action === "ready" || action === "failed")) {
@@ -90,14 +92,12 @@ export default {
   // GitHub job crashed before it could message Telegram itself.
   async scheduled(_event, env) {
     const tg = new Telegram(env.TELEGRAM_BOT_TOKEN);
-    const { keys } = await env.STORE.list({ prefix: RENDERING_PREFIX });
-    for (const { name } of keys) {
-      const startedAt = await env.STORE.get(name);
-      if (startedAt && Date.now() - Date.parse(startedAt) < RENDER_TIMEOUT_MS) continue;
-
-      await env.STORE.delete(name);
-      const job = await loadJob(name.slice(RENDERING_PREFIX.length), env);
-      if (job?.status !== "rendering") continue;
+    const cutoff = new Date(Date.now() - RENDER_TIMEOUT_MS).toISOString();
+    const { results } = await env.DB.prepare("SELECT data FROM jobs WHERE status = 'rendering' AND created_at < ?")
+      .bind(cutoff)
+      .all<{ data: string }>();
+    for (const row of results) {
+      const job = JSON.parse(row.data) as Job;
       await saveJob({ ...job, status: "failed", error: "render job never reported back" }, env);
       await tg.sendMessage(
         job.chatId,
@@ -108,7 +108,6 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-const RENDERING_PREFIX = "rendering:";
 const RENDER_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ---------- Telegram ----------
@@ -153,7 +152,7 @@ async function handleUpdate(update: TgUpdate, env: Env): Promise<void> {
     return;
   }
 
-  const editingJobId = await env.STORE.get(editKey(msg.from!.id));
+  const editingJobId = await pendingEdit(msg.from!.id, env);
   if (editingJobId && !text.startsWith("/")) {
     await applyCaptionEdit(editingJobId, text, msg.from!.id, env, tg);
     return;
@@ -173,8 +172,6 @@ async function startJob(link: string, mode: JobMode, chatId: number, env: Env, t
     createdAt: new Date().toISOString(),
   };
   await saveJob(job, env);
-  // Watched by the scheduled handler until the render job reports back.
-  await env.STORE.put(`${RENDERING_PREFIX}${job.id}`, job.createdAt, { expirationTtl: 60 * 60 * 24 });
 
   const res = await dispatchRender(job, env);
   if (!res.ok) {
@@ -226,7 +223,7 @@ async function handleButton(cb: NonNullable<TgUpdate["callback_query"]>, env: En
       return;
     }
     case ACTIONS.edit: {
-      await env.STORE.put(editKey(cb.from.id), job.id, { expirationTtl: EDIT_TTL });
+      await setPendingEdit(cb.from.id, job.id, env);
       await tg.answerCallback(cb.id);
       await tg.sendMessage(chatId, "✏️ Send the new caption as your next message. Current caption to copy and edit:");
       await tg.sendMessage(chatId, job.caption ?? "");
@@ -248,7 +245,7 @@ async function handleButton(cb: NonNullable<TgUpdate["callback_query"]>, env: En
 }
 
 async function applyCaptionEdit(jobId: string, caption: string, userId: number, env: Env, tg: Telegram): Promise<void> {
-  await env.STORE.delete(editKey(userId));
+  await clearPendingEdit(userId, env);
   const job = await loadJob(jobId, env);
   if (!job || job.status !== "ready") return;
 
@@ -266,7 +263,6 @@ async function applyCaptionEdit(jobId: string, caption: string, userId: number, 
 async function jobReport(jobId: string, action: "ready" | "failed", body: unknown, env: Env): Promise<Response> {
   const job = await loadJob(jobId, env);
   if (!job) return new Response("unknown job", { status: 404 });
-  await env.STORE.delete(`${RENDERING_PREFIX}${jobId}`);
 
   if (action === "ready") {
     const r = body as JobReady;
@@ -312,14 +308,34 @@ function workersAi(env: Env): RunModel {
 
 // ---------- Storage ----------
 
-const jobKey = (id: string) => `job:${id}`;
-const editKey = (userId: number) => `editing:${userId}`;
 const mediaKey = (jobId: string, file: string) => `media:${jobId}/${file}`;
 
 async function loadJob(id: string, env: Env): Promise<Job | null> {
-  return env.STORE.get<Job>(jobKey(id), "json");
+  const row = await env.DB.prepare("SELECT data FROM jobs WHERE id = ?").bind(id).first<{ data: string }>();
+  return row ? (JSON.parse(row.data) as Job) : null;
 }
 
 async function saveJob(job: Job, env: Env): Promise<void> {
-  await env.STORE.put(jobKey(job.id), JSON.stringify(job), { expirationTtl: JOB_TTL });
+  await env.DB.prepare(
+    `INSERT INTO jobs (id, status, created_at, data) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT (id) DO UPDATE SET status = ?2, data = ?4`,
+  )
+    .bind(job.id, job.status, job.createdAt, JSON.stringify(job))
+    .run();
+}
+
+async function pendingEdit(userId: number, env: Env): Promise<string | null> {
+  return env.DB.prepare("SELECT job_id FROM caption_edits WHERE user_id = ? AND expires_at > ?")
+    .bind(userId, Date.now())
+    .first<string>("job_id");
+}
+
+async function setPendingEdit(userId: number, jobId: string, env: Env): Promise<void> {
+  await env.DB.prepare("INSERT OR REPLACE INTO caption_edits (user_id, job_id, expires_at) VALUES (?, ?, ?)")
+    .bind(userId, jobId, Date.now() + EDIT_TTL_MS)
+    .run();
+}
+
+async function clearPendingEdit(userId: number, env: Env): Promise<void> {
+  await env.DB.prepare("DELETE FROM caption_edits WHERE user_id = ?").bind(userId).run();
 }

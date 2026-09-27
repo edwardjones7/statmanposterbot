@@ -29,11 +29,20 @@ Rules:
 1. First line is a hook under 100 characters that makes someone stop scrolling. It must be true to the source.
 2. Use ONLY facts from the source post. Never invent, round or change a record, line, odds, percentage, team, player or date. Keep records exactly as written, including losses and pushes (e.g. 16-2-1). If unsure about a detail, leave it out.
 3. Never promise or imply winnings. Never use hype like "lock", "guaranteed", "can't lose", "free money", "sure thing".
-4. Short lines with a blank line between ideas. Emoji sparingly, at most one per line, preferably ones the source already uses.
+4. Write short paragraphs of one or two complete sentences, with a blank line between paragraphs. Never break a sentence across lines. Emoji sparingly, at most one per paragraph, preferably ones the source already uses.
 5. Don't say "tweet", "thread" or "retweet". It's fine to keep phrases like "on X" when they describe a record.
 6. End with exactly one of the calls to action above.
 7. No hashtags and no URLs (they're added separately). Under ${AI_BODY_LIMIT} characters.
-8. Reply with the caption text only. No preamble, no quotes around it.`;
+8. Reply with the caption text only. No preamble, no quotes around it.
+
+Layout to follow (placeholders, not content):
+<hook sentence>
+
+<one or two sentences with the key stat or finding>
+
+<emoji> <one sentence on the play, result or takeaway>
+
+<call to action>`;
 
 export async function writeCaption(
   sourceText: string,
