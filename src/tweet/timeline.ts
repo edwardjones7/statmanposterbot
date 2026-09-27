@@ -82,6 +82,8 @@ export interface Candidate {
   size: number;
   /** Text of the earliest tweet the timeline returned, for the preview. */
   text: string;
+  /** When that earliest tweet was posted. */
+  postedAt: Date;
 }
 
 export interface Grouped {
@@ -146,12 +148,13 @@ export function groupNewTweets(
     groups.set(root, members);
   }
 
-  const textOf = new Map(included.map((t) => [t.id, t.text]));
+  const byTweetId = new Map(included.map((t) => [t.id, t]));
   const candidates = [...groups.entries()]
     .map(([rootId, members]) => {
       const ids = [...members].sort(byId);
-      const listed = ids.filter((id) => textOf.has(id));
-      return { rootId, lastId: listed[listed.length - 1], size: ids.length, text: textOf.get(listed[0]) ?? "" };
+      const listed = ids.filter((id) => byTweetId.has(id));
+      const first = byTweetId.get(listed[0])!;
+      return { rootId, lastId: listed[listed.length - 1], size: ids.length, text: first.text, postedAt: first.createdAt };
     })
     .sort((a, b) => byId(a.rootId, b.rootId));
 

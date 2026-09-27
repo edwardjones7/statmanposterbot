@@ -383,9 +383,21 @@ async function offerCandidate(c: Candidate, handle: string, chatId: string, tg: 
         ];
   await tg.sendMessage(
     chatId,
-    `🆕 New post from @${handle}${kind}\n\n${preview}\n\nhttps://x.com/${handle}/status/${c.rootId}`,
+    `🆕 New post from @${handle}${kind} · ${easternTime(c.postedAt)}\n\n${preview}\n\nhttps://x.com/${handle}/status/${c.rootId}`,
     buttons,
   );
+}
+
+// e.g. "Sep 21, 7:18 PM EDT", in the brand's time zone (US Eastern: EST or EDT by season).
+function easternTime(d: Date): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: brand.timeZone,
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(d);
 }
 
 async function handleWatchButton(cb: NonNullable<TgUpdate["callback_query"]>, env: Env, tg: Telegram): Promise<void> {
