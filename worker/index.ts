@@ -85,7 +85,31 @@ export default {
       return new Response("error", { status: 500 });
     }
   },
+
+  // Every 5 minutes (wrangler.jsonc): flag render jobs that never reported back, e.g. the
+  // GitHub job crashed before it could message Telegram itself.
+  async scheduled(_event, env) {
+    const tg = new Telegram(env.TELEGRAM_BOT_TOKEN);
+    const { keys } = await env.STORE.list({ prefix: RENDERING_PREFIX });
+    for (const { name } of keys) {
+      const startedAt = await env.STORE.get(name);
+      if (startedAt && Date.now() - Date.parse(startedAt) < RENDER_TIMEOUT_MS) continue;
+
+      await env.STORE.delete(name);
+      const job = await loadJob(name.slice(RENDERING_PREFIX.length), env);
+      if (job?.status !== "rendering") continue;
+      await saveJob({ ...job, status: "failed", error: "render job never reported back" }, env);
+      await tg.sendMessage(
+        job.chatId,
+        `❌ The render job for this link didn't finish:\n${job.tweetUrl}\n\n` +
+          `Check the run log: https://github.com/${env.GITHUB_REPO}/actions/workflows/render.yml`,
+      );
+    }
+  },
 } satisfies ExportedHandler<Env>;
+
+const RENDERING_PREFIX = "rendering:";
+const RENDER_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ---------- Telegram ----------
 
@@ -149,6 +173,8 @@ async function startJob(link: string, mode: JobMode, chatId: number, env: Env, t
     createdAt: new Date().toISOString(),
   };
   await saveJob(job, env);
+  // Watched by the scheduled handler until the render job reports back.
+  await env.STORE.put(`${RENDERING_PREFIX}${job.id}`, job.createdAt, { expirationTtl: 60 * 60 * 24 });
 
   const res = await dispatchRender(job, env);
   if (!res.ok) {
@@ -240,6 +266,7 @@ async function applyCaptionEdit(jobId: string, caption: string, userId: number, 
 async function jobReport(jobId: string, action: "ready" | "failed", body: unknown, env: Env): Promise<Response> {
   const job = await loadJob(jobId, env);
   if (!job) return new Response("unknown job", { status: 404 });
+  await env.STORE.delete(`${RENDERING_PREFIX}${jobId}`);
 
   if (action === "ready") {
     const r = body as JobReady;

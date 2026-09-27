@@ -4,6 +4,8 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-09-01",
   "observability": { "enabled": true },
+  // Watchdog for render jobs that never report back (see scheduled() in worker/index.ts).
+  "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "GITHUB_REPO": "edwardjones7/statmanposterbot",
     // Caption model (Workers AI free tier: 10k neurons/day, roughly 100 captions).
