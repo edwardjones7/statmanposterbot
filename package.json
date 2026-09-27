@@ -1,7 +1,7 @@
 {
   "name": "tweet-to-instagram-pipeline",
   "version": "1.0.0",
-  "description": "Tweet URL -> branded Instagram image -> Telegram approval -> Instagram post",
+  "description": "Turns tweets into branded Instagram posts with one-tap Telegram approval. Cloudflare Workers + GitHub Actions, $0/month.",
   "scripts": {
     "preview": "tsx scripts/preview.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
@@ -25,5 +25,14 @@
     "typescript": "^7.0.2",
     "wrangler": "^4.142.0"
   },
-  "private": true
+  "private": true,
+  "keywords": [
+    "twitter",
+    "instagram",
+    "telegram-bot",
+    "cloudflare-workers",
+    "github-actions",
+    "satori",
+    "automation"
+  ]
 }
